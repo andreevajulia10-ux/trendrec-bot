@@ -17,7 +17,7 @@ IDEA_TEMPLATES = [
 
 @router.message(Command("idea"))
 async def cmd_idea(message: Message) -> None:
-    niches = await get_user_niches(message.from_user.id)
+    niches = get_user_niches(message.from_user.id)
     if not niches:
         await message.answer(
             "Сначала выбери темы через /start\n"
@@ -26,7 +26,7 @@ async def cmd_idea(message: Message) -> None:
         return
 
     niche = random.choice(niches)
-    idea = await get_idea_for_niche(niche["slug"])
+    idea = get_idea_for_niche(niche["slug"])
 
     if idea:
         template = random.choice(IDEA_TEMPLATES)
@@ -38,7 +38,7 @@ async def cmd_idea(message: Message) -> None:
             text += f"\n\n\U0001f3ac Сценарий: {idea['script_preview']}"
     else:
         text = (
-            f"\U0001f4a1 По нише <b>{niche['name']}</b> пока нет готовых идей.\n"
+            f"\U0001f4a1 По нихе <b>{niche['name']}</b> пока нет готовых идей.\n"
             "Но вот совет: зайди в TikTok, найди 3 популярных видео в этой нише "
             "и сними свою версию самого просматриваемого!"
         )
