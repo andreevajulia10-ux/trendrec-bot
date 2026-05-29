@@ -4,20 +4,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trendrec.db")
-_connection: sqlite3.Connection | None = None
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "trendrec.db")
+
+# Глобальное соединение — один раз создаётся, живёт всё время
+_conn: sqlite3.Connection | None = None
 
 
 def get_connection() -> sqlite3.Connection:
-    global _connection
-    if _connection is None:
+    """Get the global SQLite connection (no thread-local)."""
+    global _conn
+    if _conn is None:
         logger.info("Connecting to SQLite: %s", DB_PATH)
-        _connection = sqlite3.connect(DB_PATH)
-        _connection.row_factory = sqlite3.Row
-        _connection.execute("PRAGMA journal_mode=WAL")
-        _connection.execute("PRAGMA foreign_keys=ON")
-        _init_db(_connection)
-    return _connection
+        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA foreign_keys=ON")
+        _init_db(_conn)
+    return _conn
+
+
+# Для queries.py — синоним
+get_conn_sync = get_connection
 
 
 def _init_db(conn: sqlite3.Connection) -> None:
@@ -100,8 +107,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
 
 
 def close() -> None:
-    global _connection
-    if _connection:
-        _connection.close()
-        _connection = None
+    """Close the global connection."""
+    global _conn
+    if _conn:
+        _conn.close()
+        _conn = None
         logger.info("Database connection closed")

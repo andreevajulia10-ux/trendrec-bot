@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.db.queries import get_or_create_user, get_all_niches, set_user_niches
+from bot.db.queries import get_or_create_user, get_all_niches, set_user_niches, get_user_niches
 
 router = Router()
 
@@ -14,9 +14,33 @@ class Onboarding(StatesGroup):
     choosing_niches = State()
 
 
+async def _show_niche_selection(message: Message, state: FSMContext) -> None:
+    """Show niche selection keyboard."""
+    niches = get_all_niches()
+    if not niches:
+        await message.answer("Пока нет доступных ниш. Попробуй позже.")
+        return
+
+    data = await state.get_data()
+    selected: list = data.get("selected", [])
+
+    builder = InlineKeyboardBuilder()
+    for niche in niches:
+        check = "\u2705 " if niche["id"] in selected else ""
+        builder.button(
+            text=f"{check}{niche['name']}",
+            callback_data=f"niche_{niche['id']}"
+        )
+    builder.button(text="\u2705 Готово", callback_data="niche_done")
+    builder.adjust(2)
+
+    await state.set_state(Onboarding.choosing_niches)
+    await message.answer("Выбери темы (можно несколько):", reply_markup=builder.as_markup())
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
-    user = await get_or_create_user(
+    user = get_or_create_user(
         tg_id=message.from_user.id,
         username=message.from_user.username,
         first_name=message.from_user.first_name,
@@ -30,23 +54,19 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         "Давай сначала выберем темы, которые тебя интересуют."
     )
 
-    niches = await get_all_niches()
-    if not niches:
-        await message.answer("Пока нет доступных ниш. Попробуй позже.")
-        return
-
-    builder = InlineKeyboardBuilder()
-    for niche in niches:
-        builder.button(
-            text=niche["name"],
-            callback_data=f"niche_{niche['id']}"
-        )
-    builder.button(text="\u2705 Готово", callback_data="niche_done")
-    builder.adjust(2)
-
-    await state.set_state(Onboarding.choosing_niches)
     await state.set_data({"selected": []})
-    await message.answer("Выбери темы (можно несколько):", reply_markup=builder.as_markup())
+    await _show_niche_selection(message, state)
+
+
+@router.message(Command("niches"))
+async def cmd_niches(message: Message, state: FSMContext) -> None:
+    """Change niche preferences."""
+    # Load user's current niches as pre-selected
+    current_niches = get_user_niches(message.from_user.id)
+    selected_ids = [n["id"] for n in current_niches]
+
+    await state.set_data({"selected": selected_ids})
+    await _show_niche_selection(message, state)
 
 
 @router.callback_query(F.data.startswith("niche_"), Onboarding.choosing_niches)
@@ -58,7 +78,7 @@ async def niche_toggle(callback: CallbackQuery, state: FSMContext) -> None:
         if not selected:
             await callback.answer("Выбери хотя бы одну тему!", show_alert=True)
             return
-        await set_user_niches(callback.from_user.id, selected)
+        set_user_niches(callback.from_user.id, selected)
         await state.clear()
         await callback.message.edit_text(
             f"\u2705 Темы сохранены!\n\n"
@@ -78,7 +98,7 @@ async def niche_toggle(callback: CallbackQuery, state: FSMContext) -> None:
 
     await state.update_data(selected=selected)
 
-    niches = await get_all_niches()
+    niches = get_all_niches()
     builder = InlineKeyboardBuilder()
     for niche in niches:
         check = "\u2705 " if niche["id"] in selected else ""
