@@ -1,4 +1,5 @@
 ﻿import asyncpg
+import os
 import logging
 from bot.config import config
 
@@ -10,7 +11,13 @@ _pool: asyncpg.Pool | None = None
 async def connect() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        dsn = config.database_url or "postgresql://trendrec:trendrec_dev@localhost:5432/trendrec"
+        # Railway provides DATABASE_URL automatically for attached PostgreSQL
+        dsn = os.environ.get("DATABASE_URL") or config.database_url
+        if not dsn:
+            raise ValueError(
+                "DATABASE_URL not set! "
+                "Make sure PostgreSQL is linked to this service in Railway."
+            )
         logger.info("Connecting to database...")
         _pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5)
         await _init_db(_pool)
@@ -76,7 +83,6 @@ async def _init_db(pool: asyncpg.Pool) -> None:
             );
         """)
 
-        # Fill default niches if empty
         count = await conn.fetchval("SELECT COUNT(*) FROM niches")
         if count == 0:
             await conn.executemany(
