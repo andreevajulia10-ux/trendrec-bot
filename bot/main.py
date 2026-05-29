@@ -6,18 +6,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import config
 from bot.handlers import start, trends, idea
-from bot.db.connection import connect, close
+from bot.db.connection import get_connection, close
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-async def on_startup() -> None:
-    await connect()
-
-
-async def on_shutdown() -> None:
-    await close()
 
 
 async def main() -> None:
@@ -29,12 +21,12 @@ async def main() -> None:
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-
     dp.include_router(start.router)
     dp.include_router(trends.router)
     dp.include_router(idea.router)
+
+    # Init DB on startup
+    get_connection()
 
     logger.info("Bot starting...")
     await bot.delete_webhook(drop_pending_updates=True)
