@@ -9,7 +9,7 @@ router = Router()
 
 @router.message(Command("trends"))
 async def cmd_trends(message: Message) -> None:
-    niches = get_user_niches(message.from_user.id)
+    niches = await get_user_niches(message.from_user.id)
     if not niches:
         await message.answer(
             "Сначала выбери темы через /start\n"
@@ -18,7 +18,7 @@ async def cmd_trends(message: Message) -> None:
         return
 
     niche_ids = [n["id"] for n in niches]
-    trends = get_trends_for_niches(niche_ids, limit=5)
+    trends = await get_trends_for_niches(niche_ids, limit=5)
 
     if not trends:
         await message.answer(

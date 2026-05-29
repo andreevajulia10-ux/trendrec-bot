@@ -16,7 +16,7 @@ class Onboarding(StatesGroup):
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
-    user = get_or_create_user(
+    user = await get_or_create_user(
         tg_id=message.from_user.id,
         username=message.from_user.username,
         first_name=message.from_user.first_name,
@@ -30,7 +30,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         "Давай сначала выберем темы, которые тебя интересуют."
     )
 
-    niches = get_all_niches()
+    niches = await get_all_niches()
     if not niches:
         await message.answer("Пока нет доступных ниш. Попробуй позже.")
         return
@@ -58,7 +58,7 @@ async def niche_toggle(callback: CallbackQuery, state: FSMContext) -> None:
         if not selected:
             await callback.answer("Выбери хотя бы одну тему!", show_alert=True)
             return
-        set_user_niches(callback.from_user.id, selected)
+        await set_user_niches(callback.from_user.id, selected)
         await state.clear()
         await callback.message.edit_text(
             f"\u2705 Темы сохранены!\n\n"
@@ -78,7 +78,7 @@ async def niche_toggle(callback: CallbackQuery, state: FSMContext) -> None:
 
     await state.update_data(selected=selected)
 
-    niches = get_all_niches()
+    niches = await get_all_niches()
     builder = InlineKeyboardBuilder()
     for niche in niches:
         check = "\u2705 " if niche["id"] in selected else ""
