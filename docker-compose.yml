@@ -1,0 +1,26 @@
+﻿version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trendrec-db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: trendrec
+      POSTGRES_USER: trendrec
+      POSTGRES_PASSWORD: trendrec_dev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+
+  redis:
+    image: redis:7-alpine
+    container_name: trendrec-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
