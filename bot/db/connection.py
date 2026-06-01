@@ -1,115 +1,84 @@
-﻿import sqlite3
-import os
+"""
+Подключение к PostgreSQL через asyncpg.
+
+DATABASE_URL берётся из конфига (переменная окружения).
+Формат: postgresql+asyncpg://user:password@host:5432/dbname
+"""
+
 import logging
+from typing import Optional
+
+import asyncpg
+
+from bot.config import config
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "trendrec.db")
-
-# Глобальное соединение — один раз создаётся, живёт всё время
-_conn: sqlite3.Connection | None = None
+# Глобальный пул соединений
+_pool: Optional[asyncpg.Pool] = None
 
 
-def get_connection() -> sqlite3.Connection:
-    """Get the global SQLite connection (no thread-local)."""
-    global _conn
-    if _conn is None:
-        logger.info("Connecting to SQLite: %s", DB_PATH)
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA foreign_keys=ON")
-        _init_db(_conn)
-    return _conn
+def _clean_dsn(raw: str) -> str:
+    """Приводит DATABASE_URL к формату, понятному asyncpg.
+    Убирает протокол +asyncpg, если есть.
+    """
+    return raw.replace("+asyncpg", "").replace("postgresql://", "postgresql://")
 
 
-# Для queries.py — синоним
-get_conn_sync = get_connection
-
-
-def _init_db(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            tg_id         INTEGER UNIQUE NOT NULL,
-            tg_username   TEXT,
-            first_name    TEXT,
-            last_name     TEXT,
-            language      TEXT DEFAULT 'ru',
-            is_active     INTEGER DEFAULT 1,
-            created_at    TEXT DEFAULT (datetime('now')),
-            updated_at    TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS niches (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            name          TEXT UNIQUE NOT NULL,
-            slug          TEXT UNIQUE NOT NULL,
-            description   TEXT,
-            is_active     INTEGER DEFAULT 1,
-            created_at    TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS user_niches (
-            user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            niche_id      INTEGER NOT NULL REFERENCES niches(id) ON DELETE CASCADE,
-            created_at    TEXT DEFAULT (datetime('now')),
-            PRIMARY KEY (user_id, niche_id)
-        );
-        CREATE TABLE IF NOT EXISTS trends (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            title         TEXT NOT NULL,
-            description   TEXT,
-            niche_id      INTEGER REFERENCES niches(id),
-            source_url    TEXT,
-            source        TEXT DEFAULT 'tiktok_creative_center',
-            trend_type    TEXT DEFAULT 'hashtag',
-            engagement    INTEGER DEFAULT 0,
-            collected_at  TEXT DEFAULT (datetime('now')),
-            expires_at    TEXT,
-            created_at    TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS ideas (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            trend_id      INTEGER REFERENCES trends(id) ON DELETE SET NULL,
-            niche_id      INTEGER REFERENCES niches(id),
-            title         TEXT NOT NULL,
-            description   TEXT,
-            script_preview TEXT,
-            created_at    TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS sent_trends (
-            user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            trend_id      INTEGER NOT NULL REFERENCES trends(id) ON DELETE CASCADE,
-            sent_at       TEXT DEFAULT (datetime('now')),
-            PRIMARY KEY (user_id, trend_id)
-        );
-    """)
-    conn.commit()
-    count = conn.execute("SELECT COUNT(*) FROM niches").fetchone()[0]
-    if count == 0:
-        default_niches = [
-            ("Танцы", "dance", "Танцевальные тренды, челленджи, хореография"),
-            ("Юмор", "comedy", "Скетчи, мемы, смешные ситуации"),
-            ("Образование", "education", "Обучающие видео, лайфхаки, факты"),
-            ("Красота", "beauty", "Макияж, уход, прически, трансформации"),
-            ("Еда", "food", "Рецепты, обзоры, челленджи с едой"),
-            ("Спорт", "sport", "Тренировки, фитнес, достижения"),
-            ("Музыка", "music", "Каверы, песни, музыкальные челленджи"),
-            ("Игры", "gaming", "Игровой контент, стримы, моменты"),
-            ("Технологии", "tech", "Гаджеты, обзоры, IT-тренды"),
-            ("Лайфстайл", "lifestyle", "Повседневная жизнь, влоги, рутина"),
-        ]
-        conn.executemany(
-            "INSERT INTO niches (name, slug, description) VALUES (?, ?, ?)",
-            default_niches
+async def get_pool() -> asyncpg.Pool:
+    """Возвращает пул подключений (создаёт, если ещё не создан)."""
+    global _pool
+    if _pool is None:
+        dsn = _clean_dsn(config.database_url)
+        logger.info("Создаю пул подключений к PostgreSQL...")
+        _pool = await asyncpg.create_pool(
+            dsn=dsn,
+            min_size=2,
+            max_size=10,
+            command_timeout=30,
         )
-        conn.commit()
-        logger.info("Default niches inserted")
+        logger.info("Пул подключений создан")
+    return _pool
 
 
-def close() -> None:
-    """Close the global connection."""
-    global _conn
-    if _conn:
-        _conn.close()
-        _conn = None
-        logger.info("Database connection closed")
+async def close_pool() -> None:
+    """Закрывает пул подключений."""
+    global _pool
+    if _pool:
+        await _pool.close()
+        _pool = None
+        logger.info("Пул подключений закрыт")
+
+
+async def execute(sql: str, *args) -> str:
+    """Выполняет SQL-запрос без возврата строк (INSERT/UPDATE/DELETE)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.execute(sql, *args)
+
+
+async def fetch(sql: str, *args) -> list[asyncpg.Record]:
+    """Выполняет SELECT и возвращает список записей."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch(sql, *args)
+
+
+async def fetchrow(sql: str, *args) -> Optional[asyncpg.Record]:
+    """Выполняет SELECT и возвращает одну запись или None."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(sql, *args)
+
+
+async def fetchval(sql: str, *args) -> any:
+    """Выполняет SELECT и возвращает одно значение."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(sql, *args)
+
+
+async def init_db() -> None:
+    """Создаёт таблицы, если их нет."""
+    from bot.db.migrations import run_migrations
+    await run_migrations()

@@ -1,269 +1,374 @@
+"""
+Парсер трендов TikTok.
+
+Три уровня сбора:
+1. trends24.in — популярные хештеги
+2. TikTok Creative Center — тренды по нишам
+3. Fallback — статические тренды, если парсинг недоступен
+"""
+
 import asyncio
 import logging
 import random
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 
 import aiohttp
 from bs4 import BeautifulSoup
 
-from bot.db.connection import get_connection
+from bot.db.connection import fetchrow, fetchval
+from bot.db.queries import save_trend_example as async_save_trend_example
 
 logger = logging.getLogger(__name__)
 
-# Фейковые данные, если парс упал или Creative Center недоступен
-FALLBACK_TRENDS = {
-    "dance": [
-        ("#dancechallenge", "Новый танцевальный челлендж", "hashtag", 850000),
-        ("#hiphopmoves", "Трендовые hip-hop движения", "hashtag", 620000),
-        ("#viralchoreo", "Вирусная хореография", "hashtag", 510000),
-    ],
-    "comedy": [
-        ("#relatable", "Жизненные ситуации с юмором", "hashtag", 920000),
-        ("#sketchcomedy", "Короткие смешные скетчи", "hashtag", 740000),
-        ("#expectationvsreality", "Ожидание vs реальность", "hashtag", 680000),
-    ],
-    "education": [
-        ("#learnontiktok", "Образовательный контент набирает обороты", "hashtag", 780000),
-        ("#didyouknow", "Интересные факты за 60 секунд", "hashtag", 550000),
-        ("#lifeprotips", "Лайфхаки для жизни", "hashtag", 490000),
-    ],
-    "beauty": [
-        ("#makeuptutorial", "Туториалы по макияжу", "hashtag", 910000),
-        ("#skincareroutine", "Уход за кожей", "hashtag", 670000),
-        ("#transformation", "Трансформации до/после", "hashtag", 830000),
-    ],
-    "food": [
-        ("#recipe", "Быстрые рецепты", "hashtag", 720000),
-        ("#foodhack", "Лайфхаки с едой", "hashtag", 580000),
-        ("#cookingathome", "Готовим дома", "hashtag", 440000),
-    ],
-    "sport": [
-        ("#workout", "Домашние тренировки", "hashtag", 660000),
-        ("#gymmotivation", "Мотивация для зала", "hashtag", 530000),
-        ("#yogatiktok", "Йога и растяжка", "hashtag", 390000),
-    ],
-    "music": [
-        ("#originalsong", "Авторские песни", "hashtag", 810000),
-        ("#covers", "Каверы на популярные треки", "hashtag", 640000),
-        ("#musicproduction", "Создание музыки", "hashtag", 470000),
-    ],
-    "gaming": [
-        ("#gamingontiktok", "Игровой контент", "hashtag", 890000),
-        ("#gamereview", "Обзоры игр", "hashtag", 560000),
-        ("#minecraft", "Майнкрафт тренды", "hashtag", 710000),
-    ],
-    "tech": [
-        ("#gadgets", "Новые гаджеты", "hashtag", 630000),
-        ("#productivity", "Продуктивность и софт", "hashtag", 480000),
-        ("#techreview", "Обзоры техники", "hashtag", 520000),
-    ],
-    "lifestyle": [
-        ("#dailyvlog", "Ежедневные влоги", "hashtag", 590000),
-        ("#morningroutine", "Утренние рутины", "hashtag", 540000),
-        ("#organization", "Организация пространства", "hashtag", 410000),
-    ],
+
+# =============================================================================
+# Модели данных
+# =============================================================================
+
+@dataclass
+class TrendItem:
+    title: str
+    description: str = ""
+    niche_slug: str = "general"
+    source_url: str = ""
+    trend_type: str = "hashtag"
+    engagement: int = 0
+
+
+# =============================================================================
+# Ниши и соответствующие хештеги для поиска
+# =============================================================================
+
+NICHE_HASHTAGS = {
+    "dance": ["dance", "dancechallenge", "dancetutorial", "dancelife"],
+    "comedy": ["comedy", "funny", "humor", "sketch", "comedyvideo"],
+    "education": ["education", "learn", "didyouknow", "facts", "study"],
+    "beauty": ["beauty", "makeup", "skincare", "beautytips", "transformation"],
+    "food": ["food", "recipe", "cooking", "foodie", "foodhack"],
+    "sport": ["fitness", "workout", "gym", "sport", "training"],
+    "music": ["music", "song", "cover", "singer", "musician"],
+    "gaming": ["gaming", "game", "twitch", "gamer", "minecraft"],
+    "tech": ["tech", "technology", "gadget", "ai", "programming"],
+    "lifestyle": ["lifestyle", "daily", "routine", "lifehack", "motivation"],
 }
 
-IDEAS_FALLBACK = {
-    "dance": [
-        {"title": "Повтори танец из кино", "description": "Выбери культовый танец из фильма и повтори его в своём стиле", "script_preview": "1. Покажи оригинал, 2. Своя версия, 3. Сравнение"},
-        {"title": "Танцевальный батл с другом", "description": "Вызови друга на танцевальный батл под трендовый трек", "script_preview": "1. Дуэт, 2. Поочерёдные проходки, 3. Победитель"},
-    ],
-    "comedy": [
-        {"title": "Ситуация: утро перед работой", "description": "Покажи в комедийном ключе типичное утро", "script_preview": "1. Будильник, 2. 5 минут до выхода, 3. Финал"},
-        {"title": "POV: твой внутренний голос", "description": "Озвучь внутренний монолог в неловкой ситуации", "script_preview": "1. Ситуация, 2. Мысли вслух, 3. Реакция"},
-    ],
-    "education": [
-        {"title": "Сложная тема за 60 секунд", "description": "Объясни сложную концепцию простыми словами", "script_preview": "1. Проблема, 2. Аналогия, 3. Решение"},
-        {"title": "3 факта, которые удивят", "description": "Подборка малоизвестных фактов по твоей теме", "script_preview": "1. Факт 1, 2. Факт 2, 3. Факт 3"},
-    ],
-    "beauty": [
-        {"title": "Трансформация за 5 минут", "description": "Покажи быстрый макияж из обычного в праздничный", "script_preview": "1. До, 2. Процесс, 3. После"},
-        {"title": "Разбор косметички", "description": "Топ-5 продуктов, которыми пользуешься каждый день", "script_preview": "1. Продукт 1, 2. ... , 5. Итоговый образ"},
-    ],
-    "food": [
-        {"title": "Блюдо за 10 минут", "description": "Рецепт простого и вкусного блюда", "script_preview": "1. Ингредиенты, 2. Процесс, 3. Результат"},
-        {"title": "Фуд-хак: как нарезать лук без слёз", "description": "Лайфхак для кухни, который облегчает готовку", "script_preview": "1. Проблема, 2. Лайфхак, 3. Удивление"},
-    ],
-    "sport": [
-        {"title": "Зарядка на 5 минут", "description": "Быстрая утренняя зарядка без инвентаря", "script_preview": "1. Разминка, 2. Упражнения, 3. Растяжка"},
-        {"title": "Челлендж: 100 приседаний в день", "description": "Покажи свой прогресс за неделю", "script_preview": "1. День 1, 2. День 7, 3. Результат"},
-    ],
-    "music": [
-        {"title": "Караоке под трендовый трек", "description": "Спой популярную песню в своём стиле", "script_preview": "1. Интро, 2. Припев, 3. Финал"},
-        {"title": "Как я написал трек за час", "description": "Покажи процесс создания музыки", "script_preview": "1. Идея, 2. Бит, 3. Готовый трек"},
-    ],
-    "gaming": [
-        {"title": "Лучший момент в игре", "description": "Нарезка эпичных моментов", "script_preview": "1. Момент 1, 2. Момент 2, 3. Финал"},
-        {"title": "Обзор за 30 секунд", "description": "Короткий обзор игры, в которую стоит поиграть", "script_preview": "1. Жанр, 2. Графика, 3. Вердикт"},
-    ],
-    "tech": [
-        {"title": "Гаджет, который изменил мою жизнь", "description": "Расскажи о технике, которую реально используешь", "script_preview": "1. Что это, 2. Как использую, 3. Стоит ли"},
-        {"title": "Топ-3 приложений для продуктивности", "description": "Подборка полезных приложений", "script_preview": "1. Приложение 1, 2. ..., 3. Бонус"},
-    ],
-    "lifestyle": [
-        {"title": "Моя утренняя рутина", "description": "Покажи свой идеальный старт дня", "script_preview": "1. Пробуждение, 2. Ритуалы, 3. Старт"},
-        {"title": "Организация рабочего места", "description": "Преображение рабочего стола", "script_preview": "1. До, 2. Процесс, 3. Результат"},
-    ],
+
+# =============================================================================
+# Level 1: trends24.in — свежие трендовые хештеги
+# =============================================================================
+
+TRENDS24_URLS = {
+    "dance": "https://trends24.in/united-states",
+    "comedy": "https://trends24.in/united-states",
+    "education": "https://trends24.in/united-states",
+    "beauty": "https://trends24.in/united-states",
+    "food": "https://trends24.in/united-states",
+    "sport": "https://trends24.in/united-states",
+    "music": "https://trends24.in/united-states",
+    "gaming": "https://trends24.in/united-states",
+    "tech": "https://trends24.in/united-states",
+    "lifestyle": "https://trends24.in/united-states",
 }
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
 
-TIKTOK_CC_URL = "https://ads.tiktok.com/business/creativecenter/inspiration/popular/hashtag/pc/en"
+async def _fetch_trends24_trends(niche_slug: str) -> list[TrendItem]:
+    """Парсит trends24.in — список популярных хештегов сейчас."""
+    url = TRENDS24_URLS.get(niche_slug, "https://trends24.in/united-states")
+    trends = []
 
-
-async def fetch_trends_from_tiktok() -> dict[str, list[dict]] | None:
-    """Пытается спарсить TikTok Creative Center. Возвращает None если не получилось."""
     try:
-        headers = {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(TIKTOK_CC_URL, timeout=15) as resp:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=15) as resp:
                 if resp.status != 200:
-                    logger.warning("TikTok CC returned status %s", resp.status)
-                    return None
+                    logger.warning("trends24.in вернул %s для %s", resp.status, niche_slug)
+                    return []
+
                 html = await resp.text()
                 soup = BeautifulSoup(html, "html.parser")
 
-                # Пытаемся найти трендовые хештеги — структура может меняться
-                trends_by_niche: dict[str, list[dict]] = {}
-                current_niche = "general"
-                for tag in soup.find_all(["h2", "h3", "h4", "a"]):
-                    text = tag.get_text(strip=True)
-                    if text.lower() in [s.lower() for s in FALLBACK_TRENDS.keys()]:
-                        current_niche = text.lower()
-                    if tag.name == "a" and text.startswith("#"):
-                        niche_list = trends_by_niche.setdefault(current_niche, [])
-                        niche_list.append({
-                            "title": text,
-                            "description": tag.find_next("p").get_text(strip=True) if tag.find_next("p") else "",
-                            "trend_type": "hashtag",
-                            "engagement": random.randint(100000, 900000),
-                        })
+                # trends24 показывает хештеги в <a class="trend-link">
+                trend_links = soup.select("a.trend-link")
+                for link in trend_links[:10]:
+                    title = link.get_text(strip=True)
+                    if title:
+                        trends.append(TrendItem(
+                            title=title.lstrip("#"),
+                            description=f"Популярный хештег из ниши {niche_slug}",
+                            niche_slug=niche_slug,
+                            source_url=f"https://www.tiktok.com/tag/{title.lstrip('#')}",
+                            trend_type="hashtag",
+                            engagement=random.randint(10000, 500000),
+                        ))
 
-                if trends_by_niche:
-                    return trends_by_niche
-                return None
+                logger.info("trends24.in: найдено %d трендов для %s", len(trends), niche_slug)
+
+    except asyncio.TimeoutError:
+        logger.warning("trends24.in timeout для %s", niche_slug)
     except Exception as e:
-        logger.warning("TikTok parse failed: %s", e)
+        logger.warning("trends24.in ошибка для %s: %s", niche_slug, e)
+
+    return trends
+
+
+# =============================================================================
+# Level 2: TikTok Creative Center
+# =============================================================================
+
+async def _fetch_creative_center_trends(niche_slug: str) -> list[TrendItem]:
+    """Парсит TikTok Creative Center — тренды по категориям."""
+    trends = []
+
+    try:
+        # Пробуем получить тренды через Creative Center API
+        url = "https://ads.tiktok.com/business/creativecenter/api/v1/trends/v2"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        }
+
+        params = {
+            "category": niche_slug,
+            "period": "7d",
+            "limit": 10,
+        }
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url, params=params, timeout=15) as resp:
+                if resp.status != 200:
+                    logger.debug("Creative Center API вернул %s для %s", resp.status, niche_slug)
+                    return []
+
+                data = await resp.json()
+                items = data.get("data", {}).get("list", [])
+
+                for item in items[:5]:
+                    title = item.get("hashtag_name", item.get("title", ""))
+                    if title:
+                        trends.append(TrendItem(
+                            title=title.lstrip("#"),
+                            description=item.get("description", ""),
+                            niche_slug=niche_slug,
+                            source_url=f"https://www.tiktok.com/tag/{title.lstrip('#')}",
+                            trend_type="hashtag",
+                            engagement=item.get("views", item.get("engagement", 0)),
+                        ))
+
+                logger.info("Creative Center: найдено %d трендов для %s", len(trends), niche_slug)
+
+    except asyncio.TimeoutError:
+        logger.debug("Creative Center timeout для %s", niche_slug)
+    except Exception as e:
+        logger.debug("Creative Center ошибка для %s: %s", niche_slug, e)
+
+    return trends
+
+
+# =============================================================================
+# Level 3: Fallback — статические тренды
+# =============================================================================
+
+FALLBACK_TRENDS = {
+    "dance": [
+        TrendItem("Танцевальный челлендж", "Новый танцевальный тренд", "dance", "", "hashtag", 100000),
+        TrendItem("Dance Tutorial", "Разбор танцевальных движений", "dance", "", "hashtag", 80000),
+    ],
+    "comedy": [
+        TrendItem("Скетч про работу", "Смешные ситуации на работе", "comedy", "", "hashtag", 150000),
+        TrendItem("POV видео", "Трендовый формат POV", "comedy", "", "hashtag", 120000),
+    ],
+    "education": [
+        TrendItem("Лайфхак дня", "Полезный совет на каждый день", "education", "", "hashtag", 50000),
+        TrendItem("Факт который удивит", "Интересные факты", "education", "", "hashtag", 60000),
+    ],
+    "beauty": [
+        TrendItem("Макияж за 5 минут", "Быстрый макияж для занятых", "beauty", "", "hashtag", 90000),
+        TrendItem("Skincare Routine", "Уход за кожей", "beauty", "", "hashtag", 75000),
+    ],
+    "food": [
+        TrendItem("Рецепт за 10 минут", "Быстрые и вкусные рецепты", "food", "", "hashtag", 85000),
+        TrendItem("Food Hack", "Кухонные лайфхаки", "food", "", "hashtag", 70000),
+    ],
+    "sport": [
+        TrendItem("Утренняя зарядка", "Быстрая тренировка на утро", "sport", "", "hashtag", 55000),
+        TrendItem("Fitness Challenge", "Спортивный челлендж", "sport", "", "hashtag", 65000),
+    ],
+    "music": [
+        TrendItem("Трендовая песня", "Популярный трек недели", "music", "", "hashtag", 200000),
+        TrendItem("Кавер на тренд", "Повтор популярной песни", "music", "", "hashtag", 110000),
+    ],
+    "gaming": [
+        TrendItem("Игровой момент", "Эпичный момент в игре", "gaming", "", "hashtag", 95000),
+        TrendItem("Обзор игры", "Короткий обзор", "gaming", "", "hashtag", 45000),
+    ],
+    "tech": [
+        TrendItem("Гаджет недели", "Новинки технологий", "tech", "", "hashtag", 60000),
+        TrendItem("AI инструмент", "Нейросети и AI", "tech", "", "hashtag", 120000),
+    ],
+    "lifestyle": [
+        TrendItem("Утренняя рутина", "Идеальное утро", "lifestyle", "", "hashtag", 80000),
+        TrendItem("Организация пространства", "Лайфхаки по дому", "lifestyle", "", "hashtag", 55000),
+    ],
+}
+
+
+def _get_fallback_trends(niche_slug: str, count: int = 3) -> list[TrendItem]:
+    """Возвращает статические тренды, если парсинг не удался."""
+    trends = FALLBACK_TRENDS.get(niche_slug, FALLBACK_TRENDS["lifestyle"])
+    return random.sample(trends, min(count, len(trends)))
+
+
+# =============================================================================
+# Сохранение в БД (асинхронное)
+# =============================================================================
+
+async def _save_trend_to_db(trend: TrendItem) -> Optional[int]:
+    """Сохраняет тренд в БД. Возвращает id тренда или None."""
+    # Ищем нишу по slug
+    niche = await fetchrow(
+        "SELECT id FROM niches WHERE slug = $1",
+        trend.niche_slug
+    )
+
+    if not niche:
+        logger.warning("Ниша '%s' не найдена в БД", trend.niche_slug)
         return None
 
+    niche_id = niche["id"]
 
-def _build_fallback_trends() -> dict[str, list[dict]]:
-    """Собирает тренды из запасного словаря."""
-    result = {}
-    for slug, trends in FALLBACK_TRENDS.items():
-        result[slug] = [
-            {"title": t[0], "description": t[1], "trend_type": t[2], "engagement": t[3]}
-            for t in trends
-        ]
-    return result
+    # Проверяем, есть ли уже такой тренд
+    existing = await fetchrow(
+        "SELECT id FROM trends WHERE title = $1 AND niche_id = $2",
+        trend.title, niche_id
+    )
 
+    if existing:
+        # Обновляем engagement и время
+        await fetchrow(
+            "UPDATE trends SET engagement = $1, collected_at = NOW() WHERE id = $2 "
+            "RETURNING id",
+            trend.engagement, existing["id"]
+        )
+        return existing["id"]
 
-def _build_fallback_ideas() -> dict[str, list[dict]]:
-    """Собирает идеи из запасного словаря."""
-    return {slug: ideas for slug, ideas in IDEAS_FALLBACK.items()}
+    # Вставляем новый тренд
+    row = await fetchrow(
+        "INSERT INTO trends (title, description, niche_id, source_url, trend_type, engagement) "
+        "VALUES ($1, $2, $3, $4, $5, $6) "
+        "RETURNING id",
+        trend.title, trend.description, niche_id, trend.source_url, trend.trend_type, trend.engagement
+    )
 
+    if row and trend.source_url:
+        await async_save_trend_example(
+            trend_id=row["id"],
+            video_url=trend.source_url,
+            video_title=f"Пример: {trend.title}",
+            author_name="TikTok",
+            views=trend.engagement,
+            is_featured=1
+        )
 
-async def save_trends(trends_by_niche: dict[str, list[dict]]) -> int:
-    """Сохраняет тренды в БД. Возвращает количество сохранённых."""
-    conn = get_connection()
-    count = 0
-    for slug, trends in trends_by_niche.items():
-        niche = conn.execute("SELECT id FROM niches WHERE slug = ?", (slug,)).fetchone()
-        if not niche:
-            continue
-        niche_id = niche["id"]
-        for t in trends:
-            exists = conn.execute(
-                "SELECT id FROM trends WHERE title = ? AND niche_id = ?",
-                (t["title"], niche_id)
-            ).fetchone()
-            if exists:
-                continue
-            conn.execute(
-                "INSERT INTO trends (title, description, niche_id, source, trend_type, engagement, collected_at) "
-                "VALUES (?, ?, ?, 'tiktok_cc_fallback', ?, ?, datetime('now'))",
-                (t["title"], t.get("description", ""), niche_id, t.get("trend_type", "hashtag"), t.get("engagement", 0))
-            )
-            count += 1
-    conn.commit()
-    logger.info("Saved %d new trends", count)
-    return count
+    return row["id"] if row else None
 
 
-async def save_ideas(ideas_by_niche: dict[str, list[dict]]) -> int:
-    """Сохраняет идеи в БД. Возвращает количество сохранённых."""
-    conn = get_connection()
-    count = 0
-    for slug, ideas in ideas_by_niche.items():
-        niche = conn.execute("SELECT id FROM niches WHERE slug = ?", (slug,)).fetchone()
-        if not niche:
-            continue
-        niche_id = niche["id"]
-        for idea in ideas:
-            exists = conn.execute(
-                "SELECT id FROM ideas WHERE title = ? AND niche_id = ?",
-                (idea["title"], niche_id)
-            ).fetchone()
-            if exists:
-                continue
-            conn.execute(
-                "INSERT INTO ideas (niche_id, title, description, script_preview) "
-                "VALUES (?, ?, ?, ?)",
-                (niche_id, idea["title"], idea.get("description", ""), idea.get("script_preview", ""))
-            )
-            count += 1
-    conn.commit()
-    logger.info("Saved %d new ideas", count)
-    return count
+async def _generate_fallback_idea(trend: TrendItem) -> None:
+    """Генерирует идею для видео на основе тренда."""
+    niche = await fetchrow(
+        "SELECT id FROM niches WHERE slug = $1",
+        trend.niche_slug
+    )
+
+    if not niche:
+        return
+
+    # Проверяем, есть ли уже идея для этого тренда
+    existing = await fetchrow(
+        "SELECT id FROM ideas WHERE title = $1 AND niche_id = $2",
+        f"Сними свой вариант: {trend.title}", niche["id"]
+    )
+
+    if existing:
+        return
+
+    desc = f"Используй тренд {trend.title} и сними свою версию. Добавь уникальный поворот!"
+    script = (
+        f"1. Начни с зацепки: «Ты видел этот тренд?»\n"
+        f"2. Покажи свою версию за 15-30 секунд\n"
+        f"3. Добавь уникальный элемент\n"
+        f"4. Призови подписчиков повторить"
+    )
+
+    await fetchrow(
+        "INSERT INTO ideas (niche_id, title, description, script_preview) VALUES ($1, $2, $3, $4) "
+        "RETURNING id",
+        niche["id"], f"Сними свой вариант: {trend.title}", desc, script
+    )
 
 
-async def collect_all() -> tuple[int, int]:
-    """Главная функция: собирает тренды и идеи. Возвращает (тренды, идеи)."""
-    logger.info("Starting trend collection...")
+# =============================================================================
+# Основные функции
+# =============================================================================
 
-    # Пробуем TikTok Creative Center
-    real_trends = await fetch_trends_from_tiktok()
+async def collect_for_niche(niche_slug: str) -> tuple[int, int]:
+    """Собирает тренды для одной ниши. Возвращает (количество трендов, количество идей)."""
+    trend_count = 0
+    idea_count = 0
 
-    if real_trends:
-        trends_data = real_trends
-        logger.info("Using real data from TikTok Creative Center")
-    else:
-        trends_data = _build_fallback_trends()
-        logger.info("TikTok CC unavailable, using fallback data")
+    # Level 1: trends24.in
+    trends = await _fetch_trends24_trends(niche_slug)
 
-    trend_count = await save_trends(trends_data)
+    # Level 2: Creative Center (если Level 1 не дал результатов)
+    if not trends:
+        trends = await _fetch_creative_center_trends(niche_slug)
 
-    # Идеи всегда из запасного словаря (их можно потом генерировать через LLM)
-    ideas_data = _build_fallback_ideas()
-    idea_count = await save_ideas(ideas_data)
+    # Level 3: Fallback (если ничего не нашли)
+    if not trends:
+        trends = _get_fallback_trends(niche_slug, count=3)
+        logger.info("Fallback: %d трендов для %s", len(trends), niche_slug)
+
+        # Сохраняем в БД (асинхронно)
+    for trend in trends:
+        trend_id = await _save_trend_to_db(trend)
+        if trend_id:
+            trend_count += 1
+            # Генерируем идею
+            await _generate_fallback_idea(trend)
+            idea_count += 1
 
     return trend_count, idea_count
 
 
-async def collect_if_empty() -> None:
-    """Заполняет БД, если там пусто."""
-    conn = get_connection()
-    trend_count = conn.execute("SELECT COUNT(*) FROM trends").fetchone()[0]
-    idea_count = conn.execute("SELECT COUNT(*) FROM ideas").fetchone()[0]
+async def collect_all() -> tuple[int, int]:
+    """Собирает тренды для всех ниш. Возвращает (всего трендов, всего идей)."""
+    logger.info("Начинаю сбор трендов для всех ниш...")
 
-    if trend_count == 0 or idea_count == 0:
-        logger.info("DB is empty (trends=%d, ideas=%d), collecting...", trend_count, idea_count)
+    total_trends = 0
+    total_ideas = 0
+
+    for niche_slug in NICHE_HASHTAGS.keys():
+        try:
+            t, i = await collect_for_niche(niche_slug)
+            total_trends += t
+            total_ideas += i
+            logger.info("Ниша '%s': %d трендов, %d идей", niche_slug, t, i)
+        except Exception as e:
+            logger.error("Ошибка при сборе для ниши '%s': %s", niche_slug, e)
+
+        # Небольшая пауза между запросами
+        await asyncio.sleep(1)
+
+    logger.info("Сбор завершён: %d трендов, %d идей", total_trends, total_ideas)
+    return total_trends, total_ideas
+
+
+async def collect_if_empty() -> None:
+    """Собирает тренды, если таблица trends пуста."""
+    count = await fetchval("SELECT COUNT(*) FROM trends")
+
+    if count == 0:
+        logger.info("Таблица trends пуста — запускаю первичный сбор...")
         await collect_all()
     else:
-        logger.info("DB already has data (trends=%d, ideas=%d), skipping", trend_count, idea_count)
-
-
-if __name__ == "__main__":
-    async def _test():
-        t, i = await collect_all()
-        print(f"Collected: {t} trends, {i} ideas")
-    asyncio.run(_test())
+        logger.info("Таблица trends содержит %d записей — пропускаю первичный сбор", count)

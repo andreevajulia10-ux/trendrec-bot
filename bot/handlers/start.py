@@ -1,113 +1,132 @@
-﻿from aiogram import Router, F
+﻿"""Хендлер для /start — регистрация и выбор ниш."""
+
+import logging
+
+from aiogram import Router, types
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.db.queries import get_or_create_user, get_all_niches, set_user_niches, get_user_niches
+from bot.db.queries import (
+    get_or_create_user,
+    get_all_niches,
+    set_user_niches,
+    get_user_niches,
+)
 
-router = Router()
+logger = logging.getLogger(__name__)
 
-
-class Onboarding(StatesGroup):
-    choosing_niches = State()
-
-
-async def _show_niche_selection(message: Message, state: FSMContext) -> None:
-    """Show niche selection keyboard."""
-    niches = get_all_niches()
-    if not niches:
-        await message.answer("Пока нет доступных ниш. Попробуй позже.")
-        return
-
-    data = await state.get_data()
-    selected: list = data.get("selected", [])
-
-    builder = InlineKeyboardBuilder()
-    for niche in niches:
-        check = "\u2705 " if niche["id"] in selected else ""
-        builder.button(
-            text=f"{check}{niche['name']}",
-            callback_data=f"niche_{niche['id']}"
-        )
-    builder.button(text="\u2705 Готово", callback_data="niche_done")
-    builder.adjust(2)
-
-    await state.set_state(Onboarding.choosing_niches)
-    await message.answer("Выбери темы (можно несколько):", reply_markup=builder.as_markup())
+router = Router(name="start")
 
 
 @router.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext) -> None:
-    user = get_or_create_user(
-        tg_id=message.from_user.id,
-        username=message.from_user.username,
-        first_name=message.from_user.first_name,
-        last_name=message.from_user.last_name,
+async def cmd_start(message: types.Message) -> None:
+    """Регистрирует пользователя и предлагает выбрать ниши."""
+    tg_id = message.from_user.id
+    username = message.from_user.username
+    first_name = message.from_user.first_name
+    last_name = message.from_user.last_name
+
+    user = await get_or_create_user(tg_id, username, first_name, last_name)
+
+    if not user:
+        await message.answer("❌ Ошибка регистрации. Попробуй позже.")
+        return
+
+    text = (
+        f"👋 Привет, {first_name or 'создатель'}!\n\n"
+        "Я помогу тебе находить тренды TikTok по твоим интересам.\n"
+        "Каждый день собираю свежие идеи и тренды.\n\n"
+        "📌 Выбери темы, которые тебе интересны:"
     )
 
-    await message.answer(
-        f"Привет, {message.from_user.first_name or 'создатель'}! \U0001f44b\n\n"
-        "Я TrendRec - твой помощник по трендам TikTok.\n"
-        "Я буду присылать тебе свежие тренды и идеи для видео.\n\n"
-        "Давай сначала выберем темы, которые тебя интересуют."
+    await _show_niche_selection(message, text)
+
+
+async def _show_niche_selection(
+    message: types.Message,
+    text: str = "Выбери темы (можно несколько):",
+) -> None:
+    """Показывает клавиатуру выбора ниш."""
+    niches = await get_all_niches()
+    builder = InlineKeyboardBuilder()
+
+    for niche in niches:
+        builder.button(text=f"📂 {niche['name']}", callback_data=f"niche_{niche['id']}")
+
+    builder.adjust(2)
+    builder.row(
+        InlineKeyboardButton(text="✅ Готово", callback_data="niches_done"),
+        InlineKeyboardButton(text="❌ Очистить", callback_data="niches_clear"),
     )
 
-    await state.set_data({"selected": []})
-    await _show_niche_selection(message, state)
+    await message.answer(text, reply_markup=builder.as_markup())
 
 
-@router.message(Command("niches"))
-async def cmd_niches(message: Message, state: FSMContext) -> None:
-    """Change niche preferences."""
-    # Load user's current niches as pre-selected
-    current_niches = get_user_niches(message.from_user.id)
-    selected_ids = [n["id"] for n in current_niches]
+@router.callback_query(lambda c: c.data and c.data.startswith("niche_"))
+async def callback_niche_toggle(callback: types.CallbackQuery) -> None:
+    """Обрабатывает выбор/отмену ниши."""
+    if not callback.data:
+        return
 
-    await state.set_data({"selected": selected_ids})
-    await _show_niche_selection(message, state)
+    tg_id = callback.from_user.id
 
+    if callback.data == "niches_done":
 
-@router.callback_query(F.data.startswith("niche_"), Onboarding.choosing_niches)
-async def niche_toggle(callback: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    selected: list = data.get("selected", [])
+        current = await get_user_niches(tg_id)
+        if not current:
+            await callback.message.edit_text(
+                "⚠️ Выбери хотя бы одну тему!\n\n"
+                "Напиши /start чтобы попробовать снова."
+            )
+        else:
+            names = [n["name"] for n in current]
+            await callback.message.edit_text(
+                f"✅ Отлично! Я буду следить за трендами по:\n"
+                f"{', '.join(names)}\n\n"
+                f"📈 /trends — смотреть тренды\n"
+                f"💡 /idea — идея для видео\n"
+                f"📋 /digest — дайджест"
+            )
+        await callback.answer()
+        return
 
-    if callback.data == "niche_done":
-        if not selected:
-            await callback.answer("Выбери хотя бы одну тему!", show_alert=True)
-            return
-        set_user_niches(callback.from_user.id, selected)
-        await state.clear()
+    if callback.data == "niches_clear":
+        await set_user_niches(tg_id, [])
         await callback.message.edit_text(
-            f"\u2705 Темы сохранены!\n\n"
-            "Теперь ты можешь пользоваться командами:\n"
-            "/trends - показать тренды\n"
-            "/idea - идея для видео\n\n"
-            "Каждый день я буду присылать тебе тренд дня."
+            "🗑️ Темы очищены.\n"
+            "Напиши /start чтобы выбрать заново."
         )
         await callback.answer()
         return
 
-    niche_id = int(callback.data.replace("niche_", ""))
-    if niche_id in selected:
-        selected.remove(niche_id)
+    # Toggle ниши
+    niche_id = int(callback.data.split("_")[1])
+    current = await get_user_niches(tg_id)
+    current_ids = [n["id"] for n in current]
+
+    if niche_id in current_ids:
+        current_ids.remove(niche_id)
     else:
-        selected.append(niche_id)
+        current_ids.append(niche_id)
 
-    await state.update_data(selected=selected)
+    await set_user_niches(tg_id, current_ids)
 
-    niches = get_all_niches()
-    builder = InlineKeyboardBuilder()
-    for niche in niches:
-        check = "\u2705 " if niche["id"] in selected else ""
-        builder.button(
-            text=f"{check}{niche['name']}",
-            callback_data=f"niche_{niche['id']}"
-        )
-    builder.button(text="\u2705 Готово", callback_data="niche_done")
-    builder.adjust(2)
+    # Обновляем сообщение
+    updated = await get_user_niches(tg_id)
+    names = [n["name"] for n in updated]
+    status_text = f"✅ Выбрано: {', '.join(names)}" if names else "Темы не выбраны"
 
-    await callback.message.edit_reply_markup(reply_markup=builder.as_markup())
+    await callback.message.edit_text(
+        f"📌 {status_text}\n\n"
+        "Выбери темы (можно несколько) и нажми «Готово»:",
+        reply_markup=callback.message.reply_markup,
+    )
     await callback.answer()
+
+
+@router.message(Command("niches"))
+async def cmd_niches(message: types.Message) -> None:
+    """Команда для изменения ниш."""
+    await _show_niche_selection(message, "📂 Измени свои темы (можно несколько):")
+
