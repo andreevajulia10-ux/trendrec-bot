@@ -39,8 +39,9 @@ CREATE TABLE IF NOT EXISTS trends (
     description   TEXT,
     niche_id      INT REFERENCES niches(id),
     source_url    TEXT,
+    video_url     TEXT,
     source        TEXT DEFAULT 'tiktok_creative_center',  -- откуда собрали
-    trend_type    TEXT DEFAULT 'hashtag',                 -- hashtag, sound, effect, style
+    trend_type    TEXT DEFAULT 'hashtag',                 -- hashtag, sound, effect, style, video
     engagement    INT DEFAULT 0,                          -- примерная активность
     collected_at  TIMESTAMPTZ DEFAULT NOW(),
     expires_at    TIMESTAMPTZ,                            -- когда тренд «устареет»
@@ -58,6 +59,18 @@ CREATE TABLE IF NOT EXISTS ideas (
     created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Примеры видео для трендов
+CREATE TABLE IF NOT EXISTS trend_examples (
+    id            BIGSERIAL PRIMARY KEY,
+    trend_id      BIGINT NOT NULL REFERENCES trends(id) ON DELETE CASCADE,
+    video_url     TEXT NOT NULL,
+    video_title   TEXT DEFAULT '',
+    author_name   TEXT DEFAULT '',
+    views         INT DEFAULT 0,
+    is_featured   INT DEFAULT 0,
+    created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- История отправленных трендов пользователям (чтоб не дублировать)
 CREATE TABLE IF NOT EXISTS sent_trends (
     user_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -66,11 +79,22 @@ CREATE TABLE IF NOT EXISTS sent_trends (
     PRIMARY KEY (user_id, trend_id)
 );
 
+-- Обратная связь пользователей (лайк/дизлайк тренда)
+CREATE TABLE IF NOT EXISTS user_feedback (
+    id            BIGSERIAL PRIMARY KEY,
+    user_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    trend_id      BIGINT NOT NULL REFERENCES trends(id) ON DELETE CASCADE,
+    reaction      TEXT NOT NULL CHECK (reaction IN ('like', 'dislike', 'skip')),
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (user_id, trend_id)
+);
+
 -- Индексы
 CREATE INDEX IF NOT EXISTS idx_users_tg_id ON users(tg_id);
 CREATE INDEX IF NOT EXISTS idx_trends_niche ON trends(niche_id);
 CREATE INDEX IF NOT EXISTS idx_trends_collected ON trends(collected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ideas_niche ON ideas(niche_id);
+CREATE INDEX IF NOT EXISTS idx_trend_examples_trend ON trend_examples(trend_id);
 
 -- Начальные ниши
 INSERT INTO niches (name, slug, description) VALUES
@@ -85,3 +109,4 @@ INSERT INTO niches (name, slug, description) VALUES
     ('Технологии',   'tech',       'Гаджеты, обзоры, IT-тренды'),
     ('Лайфстайл',    'lifestyle',  'Повседневная жизнь, влоги, рутина')
 ON CONFLICT (name) DO NOTHING;
+
