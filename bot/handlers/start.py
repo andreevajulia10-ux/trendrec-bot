@@ -66,6 +66,8 @@ async def _show_niche_selection(
 @router.callback_query(lambda c: c.data and c.data.startswith("niche_"))
 async def callback_niche_toggle(callback: types.CallbackQuery) -> None:
     """Обрабатывает выбор/отмену ниши."""
+    logger.info("ПОЛУЧЕН CALLBACK: %s от пользователя %s", callback.data, callback.from_user.id)
+
     if not callback.data:
         await callback.answer()
         return
