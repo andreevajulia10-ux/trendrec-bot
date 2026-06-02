@@ -290,13 +290,13 @@ class IdeaGenerator:
         self._provider = None
 
     def _init_openai(self):
-        """Инициализирует OpenAI клиент."""
+        """Инициализирует асинхронный OpenAI клиент."""
         if not config.openai_api_key:
             return False
         try:
-            from openai import OpenAI
-            self.openai_client = OpenAI(api_key=config.openai_api_key)
-            logger.info("OpenAI клиент инициализирован")
+            from openai import AsyncOpenAI
+            self.openai_client = AsyncOpenAI(api_key=config.openai_api_key)
+            logger.info("Асинхронный OpenAI клиент инициализирован")
             return True
         except ImportError:
             logger.warning("Библиотека openai не установлена")
@@ -379,11 +379,11 @@ class IdeaGenerator:
             return []
 
     async def _generate_openai(self, user_prompt: str) -> str:
-        """Генерирует через OpenAI."""
+        """Генерирует через OpenAI (асинхронно)."""
         if not self.openai_client:
             return ""
 
-        response = self.openai_client.chat.completions.create(
+        response = await self.openai_client.chat.completions.create(
             model=config.openai_model or "gpt-4o-mini",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},

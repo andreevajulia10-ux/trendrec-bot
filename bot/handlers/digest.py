@@ -6,41 +6,11 @@ from aiogram import Router, types
 from aiogram.filters import Command
 
 from bot.db.queries import get_user_niches, get_daily_trend, get_active_trends_for_niches
+from bot.services.tasks import format_trend_block as _format_trend_block
 
 logger = logging.getLogger(__name__)
 
 router = Router(name="digest")
-
-
-def _format_video_link(video_url: str) -> str:
-    """Форматирует ссылку на видео, если она есть."""
-    if video_url:
-        return f"   \u25b6\ufe0f <a href=\"{video_url}\">\u0421\u043c\u043e\u0442\u0440\u0435\u0442\u044c \u043f\u0440\u0438\u043c\u0435\u0440</a>"
-    return ""
-
-
-def _format_trend_block(t: dict, index: int = 0) -> list[str]:
-    """Форматирует один тренд в блок для сообщения."""
-    lines = []
-    if index > 0:
-        lines.append(f"  {index}. <b>{t['title']}</b>")
-    else:
-        lines.append(f"   <b>{t['title']}</b>")
-
-    if t.get('description'):
-        lines.append(f"     {t['description']}")
-
-    video_link = _format_video_link(t.get('video_url', ''))
-    if video_link:
-        lines.append(video_link)
-
-    if t.get('engagement'):
-        lines.append(f"     \U0001f440 {t['engagement']:,} \u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440\u043e\u0432".replace(",", " "))
-
-    if t.get('niche_name'):
-        lines.append(f"     \U0001f4c2 {t.get('niche_name', '?')}")
-
-    return lines
 
 
 @router.message(Command("digest"))
@@ -49,6 +19,9 @@ async def cmd_digest(message: types.Message) -> None:
     tg_id = message.from_user.id
     first_name = message.from_user.first_name or "\u0441\u043e\u0437\u0434\u0430\u0442\u0435\u043b\u044c"
 
+
+    # Показываем "печатает", чтобы пользователь не думал что бот завис
+    await message.bot.send_chat_action(tg_id, "typing")
 
     niches = await get_user_niches(tg_id)
 
@@ -61,7 +34,10 @@ async def cmd_digest(message: types.Message) -> None:
 
     niche_ids = [n["id"] for n in niches]
     niche_names = [n["name"] for n in niches]
-    fresh_trends = get_active_trends_for_niches(niche_ids, hours=24, limit=5)
+
+    # Получаем данные ДО того, как используем их
+    daily_trend = await get_daily_trend(niche_ids)
+    fresh_trends = await get_active_trends_for_niches(niche_ids, hours=24, limit=5)
 
     lines = [f"\U0001f4cb <b>\u0422\u0432\u043e\u0439 \u0434\u0430\u0439\u0434\u0436\u0435\u0441\u0442, {first_name}</b>\n"]
 

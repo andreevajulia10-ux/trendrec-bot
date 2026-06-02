@@ -20,13 +20,13 @@ from bot.services.tiktok_parser import collect_all
 logger = logging.getLogger(__name__)
 
 
-def _format_video_link(video_url: str) -> str:
+def format_video_link(video_url: str) -> str:
     if video_url:
         return f"\u25b6\ufe0f <a href=\"{video_url}\">Смотреть пример</a>"
     return ""
 
 
-def _format_trend_block(t: dict, index: int = 0) -> list[str]:
+def format_trend_block(t: dict, index: int = 0) -> list[str]:
     lines = []
     if index > 0:
         lines.append(f"  {index}. <b>{t['title']}</b>")
@@ -34,7 +34,7 @@ def _format_trend_block(t: dict, index: int = 0) -> list[str]:
         lines.append(f"   <b>{t['title']}</b>")
     if t.get('description'):
         lines.append(f"     {t['description']}")
-    video_link = _format_video_link(t.get('video_url', ''))
+    video_link = format_video_link(t.get('video_url', ''))
     if video_link:
         lines.append(f"     {video_link}")
     if t.get('engagement'):
@@ -95,13 +95,13 @@ async def send_daily_digest() -> None:
 
             if daily_trend:
                 lines.append("\U0001f525 <b>Тренд дня:</b>")
-                lines.extend(_format_trend_block(daily_trend))
+                lines.extend(format_trend_block(daily_trend))
                 lines.append("")
 
             if fresh_trends:
                 lines.append("\U0001f4c8 <b>Свежие тренды за 24ч:</b>")
                 for i, t in enumerate(fresh_trends[:3], 1):
-                    lines.extend(_format_trend_block(t, i))
+                    lines.extend(format_trend_block(t, i))
                 lines.append("")
 
             lines.append(f"\U0001f4c2 <b>Твои ниши:</b> {', '.join(niche_names)}")

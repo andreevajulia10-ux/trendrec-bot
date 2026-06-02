@@ -34,10 +34,12 @@ async def get_pool() -> asyncpg.Pool:
         _pool = await asyncpg.create_pool(
             dsn=dsn,
             min_size=2,
-            max_size=10,
-            command_timeout=30,
+            max_size=20,          # Увеличено с 10 до 20
+            max_inactive_connection_lifetime=60.0,  # Закрываем неактивные через 60с
+            command_timeout=10,   # Уменьшено с 30 до 10 секунд
+            timeout=10,           # Таймаут получения соединения из пула
         )
-        logger.info("Пул подключений создан")
+        logger.info("Пул подключений создан (max_size=20, timeout=10s)")
     return _pool
 
 

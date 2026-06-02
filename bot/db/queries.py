@@ -18,6 +18,41 @@ async def get_trend_examples(trend_id: int, limit: int = 3) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def get_trend_examples_batch(trend_ids: list[int], limit: int = 2) -> dict[int, list[dict]]:
+    """Загружает примеры для нескольких трендов одним запросом.
+    
+    Возвращает словарь {trend_id: [examples]}.
+    """
+    if not trend_ids:
+        return {}
+    placeholders = ",".join(f"${i+1}" for i in range(len(trend_ids)))
+    limit_ph = f"${len(trend_ids)+1}"
+    
+    # Используем оконную функцию для лимита примеров на каждый тренд
+    query = f"""
+        SELECT te.id, te.trend_id, te.video_url, te.video_title, te.author_name, te.views
+        FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY trend_id ORDER BY is_featured DESC, views DESC
+            ) AS rn
+            FROM trend_examples
+            WHERE trend_id IN ({placeholders})
+        ) te
+        WHERE te.rn <= {limit_ph}
+        ORDER BY te.trend_id, te.rn
+    """
+    rows = await fetch(query, *trend_ids, limit)
+    
+    result: dict[int, list[dict]] = {}
+    for row in rows:
+        d = dict(row)
+        tid = d.pop("trend_id")
+        if tid not in result:
+            result[tid] = []
+        result[tid].append(d)
+    return result
+
+
 async def save_trend_example(trend_id: int, video_url: str, video_title: str = "",
                              author_name: str = "", views: int = 0, is_featured: int = 0) -> int:
     row = await fetchrow(
@@ -60,7 +95,8 @@ async def set_user_niches(tg_id: int, niche_ids: list[int]) -> None:
     user = await fetchrow("SELECT id FROM users WHERE tg_id = $1", tg_id)
     if not user:
         return
-    async with get_pool().acquire() as conn:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         await conn.execute("DELETE FROM user_niches WHERE user_id = $1", user["id"])
         for nid in niche_ids:
             await conn.execute(
@@ -172,7 +208,7 @@ async def get_active_trends_for_niches(niche_ids: list[int], hours: int = 24, li
         f"FROM trends t "
         f"JOIN niches n ON n.id = t.niche_id "
         f"WHERE t.niche_id IN ({placeholders}) "
-        f"  AND t.collected_at >= NOW() - make_interval(hours => {hours_ph}) "
+        f"  AND t.collected_at >= NOW() - INTERVAL '1 hour' * {hours_ph} "
         f"ORDER BY t.engagement DESC "
         f"LIMIT {limit_ph}"
     )

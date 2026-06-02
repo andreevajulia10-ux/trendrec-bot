@@ -5,7 +5,7 @@ import logging
 from aiogram import Router, types
 from aiogram.filters import Command
 
-from bot.db.queries import get_user_niches, get_trends_for_niches, get_trend_examples
+from bot.db.queries import get_user_niches, get_trends_for_niches, get_trend_examples_batch
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,10 @@ router = Router(name="trends")
 async def cmd_trends(message: types.Message) -> None:
     """Показывает тренды по нишам пользователя."""
     tg_id = message.from_user.id
+
+    # Отправляем «печатает», чтобы пользователь не думал, что бот завис
+    await message.bot.send_chat_action(tg_id, "typing")
+
     niches = await get_user_niches(tg_id)
 
     if not niches:
@@ -35,6 +39,10 @@ async def cmd_trends(message: types.Message) -> None:
         )
         return
 
+    # Загружаем примеры для ВСЕХ трендов одним запросом
+    trend_ids = [t["id"] for t in trends]
+    examples_map = await get_trend_examples_batch(trend_ids, limit=2)
+
     lines = ["📌 <b>Тренды для тебя:</b>\n"]
 
     for i, t in enumerate(trends, 1):
@@ -47,17 +55,17 @@ async def cmd_trends(message: types.Message) -> None:
             lines.append(f"   {desc}")
         lines.append(f"   👀 Активность: {eng:,}".replace(",", " "))
 
-        # Примеры видео для этого тренда
-        examples = await get_trend_examples(t["id"], limit=2)
+        # Примеры видео — берём из заранее загруженного словаря
+        examples = examples_map.get(t["id"], [])
         if examples:
-            for ex in examples:
+            for ex in examples[:2]:
                 ex_title = ex.get("video_title") or "Смотреть пример"
                 lines.append(f"   ▶️ <a href=\"{ex['video_url']}\">{ex_title}</a>")
         else:
-            # Если нет примеров — показываем video_url из самого тренда
-            video_url = t.get("video_url", "")
-            if video_url:
-                lines.append(f"   ▶️ <a href=\"{video_url}\">Смотреть пример</a>")
+            # Ссылка на поиск по хештегу, но не выдаём за видео
+            source_url = t.get("source_url", "")
+            if source_url:
+                lines.append(f"   🔍 <a href=\"{source_url}\">Искать на TikTok</a>")
 
         lines.append("")
 
@@ -65,4 +73,3 @@ async def cmd_trends(message: types.Message) -> None:
     lines.append("📋 /digest — дайджест")
 
     await message.answer("\n".join(lines))
-

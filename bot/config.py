@@ -27,9 +27,11 @@ class Config(BaseSettings):
     
     # Настройки дайджеста
     daily_digest_time: str = os.getenv("DAILY_DIGEST_TIME", "10:00")
+    
+    # Прокси для Telegram API (например, http://proxy:8080 или socks5://proxy:1080)
+    telegram_proxy: str = os.getenv("TELEGRAM_PROXY", "")
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 config = Config()
-
