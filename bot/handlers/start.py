@@ -63,13 +63,15 @@ async def _show_niche_selection(
     await message.answer(text, reply_markup=builder.as_markup())
 
 
-@router.callback_query(lambda c: c.data and c.data.startswith("niche_"))
+@router.callback_query()
 async def callback_niche_toggle(callback: types.CallbackQuery) -> None:
     """Обрабатывает выбор/отмену ниши."""
-    logger.info("ПОЛУЧЕН CALLBACK: %s от пользователя %s", callback.data, callback.from_user.id)
+    logger.info("ПОЛУЧЕН CALLBACK: data='%s' type=%s от user=%s", 
+                callback.data, type(callback.data), callback.from_user.id)
 
-    if not callback.data:
-        await callback.answer()
+    if not callback.data or not callback.data.startswith("niche_"):
+        logger.warning("НЕИЗВЕСТНЫЙ callback: '%s'", callback.data)
+        await callback.answer("⚠️ Неизвестная кнопка", show_alert=True)
         return
 
     tg_id = callback.from_user.id
