@@ -1,10 +1,10 @@
-﻿"""Хендлер для /start — регистрация и выбор ниш."""
+"""Хендлер для /start — регистрация и выбор ниш."""
 
 import logging
 
 from aiogram import Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.db.queries import (
@@ -67,40 +67,39 @@ async def _show_niche_selection(
 async def callback_niche_toggle(callback: types.CallbackQuery) -> None:
     """Обрабатывает выбор/отмену ниши."""
     if not callback.data:
+        await callback.answer()
         return
 
     tg_id = callback.from_user.id
 
+    # === "Готово" ===
     if callback.data == "niches_done":
-
         current = await get_user_niches(tg_id)
         if not current:
-            await callback.message.edit_text(
-                "⚠️ Выбери хотя бы одну тему!\n\n"
-                "Напиши /start чтобы попробовать снова."
-            )
-        else:
-            names = [n["name"] for n in current]
-            await callback.message.edit_text(
-                f"✅ Отлично! Я буду следить за трендами по:\n"
-                f"{', '.join(names)}\n\n"
-                f"📈 /trends — смотреть тренды\n"
-                f"💡 /idea — идея для видео\n"
-                f"📋 /digest — дайджест"
-            )
-        await callback.answer()
+            await callback.answer("⚠️ Сначала выбери хотя бы одну тему!", show_alert=True)
+            return
+        names = [n["name"] for n in current]
+        await callback.message.edit_text(
+            f"✅ Отлично! Я буду следить за трендами по:\n"
+            f"{', '.join(names)}\n\n"
+            f"📈 /trends — смотреть тренды\n"
+            f"💡 /idea — идея для видео\n"
+            f"📋 /digest — дайджест"
+        )
+        await callback.answer("✅ Темы сохранены!")
         return
 
+    # === "Очистить" ===
     if callback.data == "niches_clear":
         await set_user_niches(tg_id, [])
         await callback.message.edit_text(
             "🗑️ Темы очищены.\n"
             "Напиши /start чтобы выбрать заново."
         )
-        await callback.answer()
+        await callback.answer("🗑️ Темы очищены")
         return
 
-    # Toggle ниши
+    # === Toggle ниши ===
     niche_id = int(callback.data.split("_")[1])
     current = await get_user_niches(tg_id)
     current_ids = [n["id"] for n in current]
@@ -112,16 +111,40 @@ async def callback_niche_toggle(callback: types.CallbackQuery) -> None:
 
     await set_user_niches(tg_id, current_ids)
 
-    # Обновляем сообщение
+    # Строим новую клавиатуру с обновлённым состоянием
+    niches = await get_all_niches()
+    updated_ids = set(current_ids)
+    builder = InlineKeyboardBuilder()
+
+    for niche in niches:
+        is_selected = niche["id"] in updated_ids
+        prefix = "✅ " if is_selected else "📂 "
+        builder.button(text=f"{prefix}{niche['name']}", callback_data=f"niche_{niche['id']}")
+
+    builder.adjust(2)
+    builder.row(
+        InlineKeyboardButton(text="✅ Готово", callback_data="niches_done"),
+        InlineKeyboardButton(text="❌ Очистить", callback_data="niches_clear"),
+    )
+
     updated = await get_user_niches(tg_id)
     names = [n["name"] for n in updated]
     status_text = f"✅ Выбрано: {', '.join(names)}" if names else "Темы не выбраны"
 
-    await callback.message.edit_text(
-        f"📌 {status_text}\n\n"
-        "Выбери темы (можно несколько) и нажми «Готово»:",
-        reply_markup=callback.message.reply_markup,
-    )
+    try:
+        await callback.message.edit_text(
+            f"📌 {status_text}\n\n"
+            "Выбери темы (можно несколько) и нажми «Готово»:",
+            reply_markup=builder.as_markup(),
+        )
+    except Exception as e:
+        logger.warning("Ошибка обновления сообщения: %s", e)
+        await callback.message.answer(
+            f"📌 {status_text}\n\n"
+            "Выбери темы (можно несколько) и нажми «Готово»:",
+            reply_markup=builder.as_markup(),
+        )
+
     await callback.answer()
 
 

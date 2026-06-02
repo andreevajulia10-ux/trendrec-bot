@@ -10,6 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramNetworkError as AiogramTelegramNetworkError
 from bot.config import config
 from bot.handlers import start, trends, idea, digest, settings, stats
 from bot.db.connection import close_pool, init_db
@@ -122,7 +123,7 @@ async def main() -> None:
     dp.include_router(settings.router)
     dp.include_router(stats.router)
 
-    # Регистрируем startup/shutdown
+        # Регистрируем startup/shutdown
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
@@ -131,10 +132,10 @@ async def main() -> None:
         # Проверяем, что бот может подключиться к Telegram
         bot_me = await bot.get_me()
         logger.info("Бот @%s успешно подключился к Telegram", bot_me.username)
-        
+
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
-    except aiogram.exceptions.TelegramNetworkError as e:
+    except AiogramTelegramNetworkError as e:
         logger.error("ОШИБКА: Не удалось подключиться к Telegram API! Прокси проблема или блокировка: %s", e, exc_info=True)
         logger.error("Проверьте TELEGRAM_PROXY или отключите его (TELEGRAM_PROXY=)")
     except Exception as e:
